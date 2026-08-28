@@ -1,0 +1,71 @@
+name: release
+
+# Each architecture builds on its own runner. Nothing is emulated: OpenSSH's
+# configure decides what the platform supports by running test programs, and
+# under qemu-user those answers are wrong.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile carries the pins, the static gate and the `sshd -V` run
+      # check, so a green build here already means those passed.
+      - name: Build
+        run: docker build --output type=local,dest=out .
+
+      - name: Package
+        run: |
+          set -eu
+          tar -czf "openssh-static-${{ matrix.arch }}.tar.gz" -C out .
+          sha256sum "openssh-static-${{ matrix.arch }}.tar.gz" \
+            > "openssh-static-${{ matrix.arch }}.tar.gz.sha256"
+          cat "openssh-static-${{ matrix.arch }}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openssh-static-${{ matrix.arch }}
+          path: |
+            openssh-static-${{ matrix.arch }}.tar.gz
+            openssh-static-${{ matrix.arch }}.tar.gz.sha256
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      # One release per tag, and tags are never moved: consumers pin the asset
+      # by SHA256 and a rolling tag would silently change what that pin covers.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cat ./*.sha256 > SHA256SUMS
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file SHA256SUMS \
+            ./*.tar.gz ./*.sha256 SHA256SUMS
