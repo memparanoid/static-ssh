@@ -61,6 +61,11 @@ WORKDIR /src
 #   hybrid key exchanges. Before 9.9, configure refuses any OpenSSL it does not
 #   list, 3.5 included, and nothing ed25519 needs comes from it. No RSA, no
 #   ECDSA.
+# CFLAGS: -fpermissive turns back into warnings what GCC 14 made errors in C,
+#   which code older than 9.9 trips (`implicit declaration of function
+#   'vsnprintf'` in 9.0p1, an incompatible pointer to `connect` in 9.8p1), and
+#   -std=gnu17 keeps a compiler that defaults to C23 from reading it as C23.
+#   `-g -O2` are autoconf's defaults, which a CFLAGS given replaces.
 # --with-privsep-user=root: the privsep fork does not drop to an unprivileged
 #   uid, so sshd needs no `sshd` entry in passwd. Callers that run it in a
 #   namespace with their own user database do not have to declare one.
@@ -72,7 +77,7 @@ RUN curl -fsSLO "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${
  && mkdir openssh \
  && tar xzf "openssh-${OPENSSH_VERSION}.tar.gz" --strip-components=1 -C openssh \
  && cd openssh \
- && ./configure LDFLAGS="-static" \
+ && ./configure CFLAGS="-g -O2 -std=gnu17 -fpermissive" LDFLAGS="-static" \
       --prefix=/usr \
       --disable-strip \
       --without-openssl \
@@ -109,10 +114,11 @@ RUN for binary in sshd-session sshd-auth; do \
       fi; \
     done
 
-# The build is native, so the binaries run here. `sshd -V` prints the release
-# and exits 0, which is the cheapest proof the static link produced something
-# executable rather than merely well-formed.
-RUN /out/sshd -V
+# The build is native, so the binaries run here, and the release sshd prints is
+# the cheapest proof the static link produced something executable rather than
+# merely well-formed. The exit status is not asked: 9.0's sshd has no `-V`, and
+# prints the release in its usage and exits 1.
+RUN /out/sshd -V 2>&1 | grep "^OpenSSH_${OPENSSH_VERSION%p*}p"
 
 # --- export just the binaries (--output type=local) ------------------------
 FROM scratch AS export
