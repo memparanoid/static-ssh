@@ -3,10 +3,14 @@ name: release
 # Each architecture builds on its own runner. Nothing is emulated: OpenSSH's
 # configure decides what the platform supports by running test programs, and
 # under qemu-user those answers are wrong.
+#
+# Every version in `versions` is built for both architectures. A push to main
+# publishes one release per version, tagged `<version>-<recipe>`, where the
+# recipe is the start of the Dockerfile's SHA256: the same recipe never
+# publishes twice, and a changed one publishes every version under new tags.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -14,58 +18,106 @@ permissions:
   contents: write
 
 jobs:
+  versions:
+    runs-on: ubuntu-24.04
+    outputs:
+      list: ${{ steps.read.outputs.list }}
+      recipe: ${{ steps.read.outputs.recipe }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: read
+        run: |
+          set -eu
+          list=$(jq -R -s -c '
+            split("\n") | map(select(length > 0) | split(" "))
+            | map({version: .[0], sha256: .[1]})' versions)
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "recipe=$(sha256sum Dockerfile | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          echo "$list" | jq .
+
   build:
+    needs: versions
     strategy:
       fail-fast: false
       matrix:
-        include:
+        openssh: ${{ fromJSON(needs.versions.outputs.list) }}
+        platform:
           - runner: ubuntu-24.04
             arch: amd64
           - runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform.runner }}
+    env:
+      ASSET: openssh-${{ matrix.openssh.version }}-static-${{ matrix.platform.arch }}.tar.gz
     steps:
       - uses: actions/checkout@v4
 
-      # The Dockerfile carries the pins, the static gate and the `sshd -V` run
-      # check, so a green build here already means those passed.
+      # The Dockerfile carries the static gate, the shipped-binaries gate and
+      # the `sshd -V` run check, so a green build here already means they passed.
       - name: Build
-        run: docker build --output type=local,dest=out .
+        run: |
+          docker build \
+            --build-arg OPENSSH_VERSION=${{ matrix.openssh.version }} \
+            --build-arg OPENSSH_SHA256=${{ matrix.openssh.sha256 }} \
+            --output type=local,dest=out .
 
       - name: Package
         run: |
           set -eu
-          tar -czf "openssh-static-${{ matrix.arch }}.tar.gz" -C out .
-          sha256sum "openssh-static-${{ matrix.arch }}.tar.gz" \
-            > "openssh-static-${{ matrix.arch }}.tar.gz.sha256"
-          cat "openssh-static-${{ matrix.arch }}.tar.gz.sha256"
+          tar -czf "$ASSET" -C out .
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: openssh-static-${{ matrix.arch }}
+          name: openssh-${{ matrix.openssh.version }}-static-${{ matrix.platform.arch }}
           path: |
-            openssh-static-${{ matrix.arch }}.tar.gz
-            openssh-static-${{ matrix.arch }}.tar.gz.sha256
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
 
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [versions, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        openssh: ${{ fromJSON(needs.versions.outputs.list) }}
     runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ matrix.openssh.version }}-${{ needs.versions.outputs.recipe }}
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: openssh-${{ matrix.openssh.version }}-static-*
           merge-multiple: true
 
-      # One release per tag, and tags are never moved: consumers pin the asset
-      # by SHA256 and a rolling tag would silently change what that pin covers.
+      # Tags are never moved: consumers pin an asset by its SHA256, and a tag
+      # published again would silently change what that pin covers.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$TAG is already published; not touched."
+            exit 0
+          fi
+
           cat ./*.sha256 > SHA256SUMS
-          gh release create "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
-            --notes-file SHA256SUMS \
+
+          {
+            echo "OpenSSH ${{ matrix.openssh.version }}, source SHA256 ${{ matrix.openssh.sha256 }}."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > NOTES
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes-file NOTES \
             ./*.tar.gz ./*.sha256 SHA256SUMS

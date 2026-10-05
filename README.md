@@ -1,11 +1,13 @@
 # static-ssh
 
 Statically linked OpenSSH binaries for Linux `amd64` and `arm64`, built from
-pinned upstream source in GitHub Actions.
+pinned upstream source in GitHub Actions, for every version in
+[`versions`](versions).
 
-Each release ships `sshd`, `sshd-session`, `sshd-auth`, `ssh-keygen` and `ssh`.
-They have no dynamic dependencies: they run on any Linux of the same
-architecture regardless of its libc, OpenSSL or loader.
+Each release is one version and ships `sshd`, `ssh-keygen` and `ssh`, plus
+`sshd-session` from 9.8 and `sshd-auth` from 10.0. They have no dynamic
+dependencies: they run on any Linux of the same architecture regardless of its
+libc, OpenSSL or loader.
 
 ## Why
 
@@ -22,7 +24,7 @@ installed: a namespace, a scratch container, a minimal image.
 
 | | |
 |---|---|
-| OpenSSH | `10.5p1`, source tarball verified against a hardcoded SHA256 |
+| OpenSSH | every line of `versions`: a version and its source tarball's SHA256, taken from the [release notes](https://www.openssh.com/releasenotes.html) |
 | Build image | `alpine:3.23`, by digest |
 | openssl, zlib | Alpine's static archives, pinned by that same digest |
 
@@ -54,9 +56,10 @@ No host keys are generated (`install-nokeys`). No `moduli` is shipped, so
 
 ## Three binaries, not one
 
-Since 9.8 `sshd` execs `sshd-session` for each connection, and since 10.x
-`sshd-session` execs `sshd-auth`. Both paths are configuration keywords, not
-compiled-in locations:
+Since 9.8 `sshd` execs `sshd-session` for each connection, and since 10.0
+`sshd-session` execs `sshd-auth`. Before those versions the binaries do not
+exist and the keywords below are unknown, which sshd treats as fatal. Both
+paths are configuration keywords, not compiled-in locations:
 
 ```
 SshdSessionPath  /wherever/sshd-session
@@ -78,12 +81,23 @@ runs failed at two different checks, one reporting a missing `ssize_t` and the
 other reporting OpenSSL headers as not matching their own library. CI builds
 each architecture on its own runner.
 
+## Releases
+
+A push to `main` builds every version on both architectures and publishes one
+release per version, tagged `<version>-<recipe>`: `recipe` is the first twelve
+hex digits of the Dockerfile's SHA256. A tag that already exists is not
+published again, so the same recipe never republishes, and a changed recipe
+publishes every version under new tags beside the old ones.
+
+Pull requests build and publish nothing.
+
 ## Verifying a download
 
-Every release publishes a `SHA256SUMS` and a `.sha256` next to each tarball.
+Every release publishes a `SHA256SUMS`, also in its notes, and a `.sha256` next
+to each tarball.
 
 ```sh
-sha256sum -c openssh-static-amd64.tar.gz.sha256
+sha256sum -c openssh-10.5p1-static-amd64.tar.gz.sha256
 ```
 
 Tags are never moved. A given tag's assets are the ones it was published with,

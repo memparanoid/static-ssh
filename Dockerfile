@@ -18,26 +18,32 @@
 # libcrypto, so it only runs inside an Alpine filesystem.
 #
 # Why musl and not glibc: a static glibc build silently loses NSS. musl parses
-# /etc/passwd itself, which also means this sshd never consults nscd.
+# /etc/passwd itself, and asks nscd first only when a daemon answers on
+# /var/run/nscd/socket.
 #
-# Since 9.8 sshd is not one binary: it execs `sshd-session`, and since 10.x
+# Since 9.8 sshd is not one binary: it execs `sshd-session`, and since 10.0
 # `sshd-auth` as well. Both are runtime-configurable (`SshdSessionPath`,
 # `SshdAuthPath`), so the three can be installed side by side under any
-# directory and pointed at from a generated sshd_config.
+# directory and pointed at from a generated sshd_config. An older version
+# builds neither, and refuses both keywords.
 #
-# Build:
-#   docker build --output type=local,dest=out .
+# Build, with a line of `versions`:
+#   docker build --build-arg OPENSSH_VERSION=10.5p1 \
+#     --build-arg OPENSSH_SHA256=d44d28a8… --output type=local,dest=out .
 #
-# On a version bump: fetch the tarball, `sha256sum` it, verify against the
-# openssh-unix-announce release announcement (and, if you have the release key,
-# the detached .asc next to the tarball), and update OPENSSH_SHA256 below.
+# To add a version: take the tarball's SHA256 from the release notes at
+# https://www.openssh.com/releasenotes.html (base64 there, hex here) and add
+# the line to `versions`.
 # ============================================================================
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS build
 
-# --- pinned version + source SHA256 (the integrity anchor) -----------------
-ARG OPENSSH_VERSION=10.5p1
-ARG OPENSSH_SHA256=d44d28a839ea9daf969cc69150fde59910b2b39361dad81a3bd6cbd19218db11
+# --- version + source SHA256 (the integrity anchor), from `versions` -------
+# No defaults: a build that forgot one fails here instead of producing a
+# version nobody asked for.
+ARG OPENSSH_VERSION
+ARG OPENSSH_SHA256
+RUN test -n "${OPENSSH_VERSION}" && test -n "${OPENSSH_SHA256}"
 
 # openssl and zlib come from Alpine as static archives, so neither is built
 # here. They are pinned by the image digest above, same as the compiler.
@@ -66,8 +72,11 @@ RUN curl -fsSLO "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${
       --with-privsep-path=/var/empty \
  && make -j"$(nproc)" \
  && mkdir -p /out \
- && for binary in sshd sshd-session sshd-auth ssh-keygen ssh; do \
+ && for binary in sshd ssh-keygen ssh; do \
       strip "$binary" && cp "$binary" "/out/$binary"; \
+    done \
+ && for binary in sshd-session sshd-auth; do \
+      if [ -e "$binary" ]; then strip "$binary" && cp "$binary" "/out/$binary"; fi; \
     done
 
 # --- fail the build unless every binary is genuinely static ----------------
@@ -80,6 +89,16 @@ RUN for binary in /out/*; do \
         *static*) echo "$binary: $kind" ;; \
         *) echo "not static: $binary: $kind" >&2; exit 1 ;; \
       esac; \
+    done
+
+# --- fail the build unless every binary sshd execs was shipped ------------
+# Which of the two a version has is read from the binaries themselves: the path
+# one was compiled to exec is in whichever execs it. Without this a version that
+# has one and did not ship it would pass, and fail only at its first connection.
+RUN for binary in sshd-session sshd-auth; do \
+      if cat /out/* | grep -q "/usr/libexec/$binary" && [ ! -e "/out/$binary" ]; then \
+        echo "sshd execs $binary, and it was not shipped" >&2; exit 1; \
+      fi; \
     done
 
 # The build is native, so the binaries run here. `sshd -V` prints the release
