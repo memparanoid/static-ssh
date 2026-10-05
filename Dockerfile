@@ -45,16 +45,22 @@ ARG OPENSSH_VERSION
 ARG OPENSSH_SHA256
 RUN test -n "${OPENSSH_VERSION}" && test -n "${OPENSSH_SHA256}"
 
-# openssl and zlib come from Alpine as static archives, so neither is built
-# here. They are pinned by the image digest above, same as the compiler.
+# zlib comes from Alpine as a static archive, so it is not built here. It is
+# pinned by the image digest above, same as the compiler.
 RUN apk add --no-cache \
       build-base linux-headers pkgconf \
-      openssl-dev openssl-libs-static \
       zlib-dev zlib-static \
       curl file
 
 WORKDIR /src
 
+# Into a directory of our own rather than the one the tarball names: 10.0p2's
+# tarball unpacks to a directory that is not called openssh-10.0p2.
+#
+# --without-openssl: OpenSSH's own ed25519, curve25519, chacha20-poly1305 and
+#   hybrid key exchanges. Before 9.9, configure refuses any OpenSSL it does not
+#   list, 3.5 included, and nothing ed25519 needs comes from it. No RSA, no
+#   ECDSA.
 # --with-privsep-user=root: the privsep fork does not drop to an unprivileged
 #   uid, so sshd needs no `sshd` entry in passwd. Callers that run it in a
 #   namespace with their own user database do not have to declare one.
@@ -63,11 +69,13 @@ WORKDIR /src
 # install-nokeys: no host keys are generated here. Every caller makes its own.
 RUN curl -fsSLO "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPENSSH_VERSION}.tar.gz" \
  && echo "${OPENSSH_SHA256}  openssh-${OPENSSH_VERSION}.tar.gz" | sha256sum -c - \
- && tar xzf "openssh-${OPENSSH_VERSION}.tar.gz" \
- && cd "openssh-${OPENSSH_VERSION}" \
+ && mkdir openssh \
+ && tar xzf "openssh-${OPENSSH_VERSION}.tar.gz" --strip-components=1 -C openssh \
+ && cd openssh \
  && ./configure LDFLAGS="-static" \
       --prefix=/usr \
       --disable-strip \
+      --without-openssl \
       --with-privsep-user=root \
       --with-privsep-path=/var/empty \
  && make -j"$(nproc)" \

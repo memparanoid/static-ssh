@@ -26,7 +26,7 @@ installed: a namespace, a scratch container, a minimal image.
 |---|---|
 | OpenSSH | every line of `versions`: a version and its source tarball's SHA256, taken from the [release notes](https://www.openssh.com/releasenotes.html) |
 | Build image | `alpine:3.23`, by digest |
-| openssl, zlib | Alpine's static archives, pinned by that same digest |
+| zlib | Alpine's static archive, pinned by that same digest |
 
 The compiler, the libraries and the source are all fixed by those three pins.
 Nothing is downloaded unpinned at build time.
@@ -37,9 +37,15 @@ Nothing is downloaded unpinned at build time.
 ./configure LDFLAGS="-static" \
   --prefix=/usr \
   --disable-strip \
+  --without-openssl \
   --with-privsep-user=root \
   --with-privsep-path=/var/empty
 ```
+
+`--without-openssl` leaves OpenSSH on its own ed25519, curve25519,
+chacha20-poly1305 and hybrid key exchanges: no RSA and no ECDSA. Before 9.9,
+configure refuses any OpenSSL version it does not list, so this is also what
+lets one recipe build every version.
 
 `--with-privsep-user=root` means the privsep fork does not drop to an
 unprivileged uid, so sshd needs no `sshd` entry in `/etc/passwd`. Callers that
