@@ -4,10 +4,14 @@ name: release
 # configure decides what the platform supports by running test programs, and
 # under qemu-user those answers are wrong.
 #
-# Every version in `versions` is built for both architectures. A push to main
-# publishes one release per version, tagged `<version>-<recipe>`, where the
-# recipe is the start of the Dockerfile's SHA256: the same recipe never
-# publishes twice, and a changed one publishes every version under new tags.
+# One runner per architecture builds every version in `versions`, one after
+# another on the same docker daemon, so the base image and its packages are
+# built once and every version reuses them.
+#
+# A push to main publishes one release per version, tagged `<version>-<recipe>`,
+# where the recipe is the start of the Dockerfile's SHA256: the same recipe
+# never publishes twice, and a changed one publishes every version under new
+# tags.
 on:
   push:
     branches: [main]
@@ -18,106 +22,108 @@ permissions:
   contents: write
 
 jobs:
-  versions:
-    runs-on: ubuntu-24.04
-    outputs:
-      list: ${{ steps.read.outputs.list }}
-      recipe: ${{ steps.read.outputs.recipe }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: read
-        run: |
-          set -eu
-          list=$(jq -R -s -c '
-            split("\n") | map(select(length > 0) | split(" "))
-            | map({version: .[0], sha256: .[1]})' versions)
-          echo "list=$list" >> "$GITHUB_OUTPUT"
-          echo "recipe=$(sha256sum Dockerfile | cut -c1-12)" >> "$GITHUB_OUTPUT"
-          echo "$list" | jq .
-
   build:
-    needs: versions
     strategy:
       fail-fast: false
       matrix:
-        openssh: ${{ fromJSON(needs.versions.outputs.list) }}
-        platform:
+        include:
           - runner: ubuntu-24.04
             arch: amd64
           - runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.platform.runner }}
-    env:
-      ASSET: openssh-${{ matrix.openssh.version }}-static-${{ matrix.platform.arch }}.tar.gz
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       # The Dockerfile carries the static gate, the shipped-binaries gate and
-      # the `sshd -V` run check, so a green build here already means they passed.
-      - name: Build
+      # the run check, so a version that builds here already passed them. A
+      # version that fails does not stop the others: the step fails at the end,
+      # naming every one that did.
+      - name: Build every version
         run: |
-          docker build \
-            --build-arg OPENSSH_VERSION=${{ matrix.openssh.version }} \
-            --build-arg OPENSSH_SHA256=${{ matrix.openssh.sha256 }} \
-            --output type=local,dest=out .
+          set -u
+          mkdir -p dist
+          failed=""
 
-      - name: Package
-        run: |
-          set -eu
-          tar -czf "$ASSET" -C out .
-          sha256sum "$ASSET" > "$ASSET.sha256"
-          cat "$ASSET.sha256"
+          while read -r version sha256; do
+            [ -n "$version" ] || continue
+            echo "::group::$version"
+
+            asset="openssh-${version}-static-${{ matrix.arch }}.tar.gz"
+
+            if docker build \
+                 --build-arg OPENSSH_VERSION="$version" \
+                 --build-arg OPENSSH_SHA256="$sha256" \
+                 --output type=local,dest="out/$version" . < /dev/null \
+               && tar -czf "dist/$asset" -C "out/$version" . \
+               && (cd dist && sha256sum "$asset" > "$asset.sha256"); then
+              cat "dist/$asset.sha256"
+            else
+              failed="$failed $version"
+            fi
+
+            echo "::endgroup::"
+          done < versions
+
+          if [ -n "$failed" ]; then
+            echo "failed on ${{ matrix.arch }}:$failed" >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: openssh-${{ matrix.openssh.version }}-static-${{ matrix.platform.arch }}
-          path: |
-            ${{ env.ASSET }}
-            ${{ env.ASSET }}.sha256
+          name: openssh-static-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: ignore
 
   release:
-    needs: [versions, build]
+    needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    strategy:
-      fail-fast: false
-      matrix:
-        openssh: ${{ fromJSON(needs.versions.outputs.list) }}
     runs-on: ubuntu-24.04
-    env:
-      TAG: ${{ matrix.openssh.version }}-${{ needs.versions.outputs.recipe }}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
-          pattern: openssh-${{ matrix.openssh.version }}-static-*
+          path: dist
           merge-multiple: true
 
       # Tags are never moved: consumers pin an asset by its SHA256, and a tag
       # published again would silently change what that pin covers.
-      - name: Publish
+      - name: Publish every version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          recipe=$(sha256sum Dockerfile | cut -c1-12)
 
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "$TAG is already published; not touched."
-            exit 0
-          fi
+          while read -r version sha256; do
+            [ -n "$version" ] || continue
+            tag="${version}-${recipe}"
 
-          cat ./*.sha256 > SHA256SUMS
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              echo "$tag is already published; not touched."
+              continue
+            fi
 
-          {
-            echo "OpenSSH ${{ matrix.openssh.version }}, source SHA256 ${{ matrix.openssh.sha256 }}."
-            echo
-            echo '```'
-            cat SHA256SUMS
-            echo '```'
-          } > NOTES
+            mkdir -p "release/$version"
+            cp dist/openssh-"${version}"-static-* "release/$version/"
+            cat "release/$version"/*.sha256 > "release/$version/SHA256SUMS"
 
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "$TAG" \
-            --notes-file NOTES \
-            ./*.tar.gz ./*.sha256 SHA256SUMS
+            {
+              echo "OpenSSH ${version}, source SHA256 ${sha256}."
+              echo
+              echo '```'
+              cat "release/$version/SHA256SUMS"
+              echo '```'
+            } > "release/$version/NOTES"
+
+            gh release create "$tag" < /dev/null \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$tag" \
+              --notes-file "release/$version/NOTES" \
+              "release/$version"/*.tar.gz "release/$version"/*.sha256 \
+              "release/$version/SHA256SUMS"
+          done < versions
