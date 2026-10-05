@@ -117,8 +117,9 @@ RUN for binary in sshd-session sshd-auth; do \
 # The build is native, so the binaries run here, and the release sshd prints is
 # the cheapest proof the static link produced something executable rather than
 # merely well-formed. The exit status is not asked: 9.0's sshd has no `-V`, and
-# prints the release in its usage and exits 1.
-RUN /out/sshd -V 2>&1 | grep "^OpenSSH_${OPENSSH_VERSION%p*}p"
+# prints the release in its usage and exits 1. The portable suffix is not asked
+# either: 9.2's `-V` prints `OpenSSH_9.2,` where its usage prints `9.2p1`.
+RUN /out/sshd -V 2>&1 | grep -E "^OpenSSH_${OPENSSH_VERSION%p*}(p[0-9]+)?,"
 
 # --- export just the binaries (--output type=local) ------------------------
 FROM scratch AS export
