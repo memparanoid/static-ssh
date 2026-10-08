@@ -4,7 +4,7 @@ Statically linked OpenSSH binaries for Linux `amd64` and `arm64`, built from
 pinned upstream source in GitHub Actions, for every version in
 [`versions`](versions).
 
-Each release is one version and ships `sshd`, `ssh-keygen` and `ssh`, plus
+Each release is one version and ships `sshd`, `ssh-keygen`, `ssh` and `ssh-keysign`, plus
 `sshd-session` from 9.8 and `sshd-auth` from 10.0. They have no dynamic
 dependencies: they run on any Linux of the same architecture regardless of its
 libc, OpenSSL or loader.

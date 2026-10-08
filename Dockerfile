@@ -1,10 +1,10 @@
 # ============================================================================
 # Fully-static (musl) OpenSSH.
 #
-# Produces statically-linked `sshd`, `sshd-session`, `sshd-auth`, `ssh-keygen`
-# and `ssh` with zero dynamic dependencies, from pinned openssh-portable
-# source. The binaries run on any Linux of the same architecture regardless of
-# what libc, OpenSSL or loader that host has.
+# Produces statically-linked `sshd`, `sshd-session`, `sshd-auth`, `ssh-keygen`,
+# `ssh` and `ssh-keysign` with zero dynamic dependencies, from pinned
+# openssh-portable source. The binaries run on any Linux of the same
+# architecture regardless of what libc, OpenSSL or loader that host has.
 #
 # NATIVE ONLY. Build this for the architecture you are running on. Building it
 # under qemu-user emulation does not work: OpenSSH's configure compiles and
@@ -85,7 +85,7 @@ RUN curl -fsSLO "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${
       --with-privsep-path=/var/empty \
  && make -j"$(nproc)" \
  && mkdir -p /out \
- && for binary in sshd ssh-keygen ssh; do \
+ && for binary in sshd ssh-keygen ssh ssh-keysign; do \
       strip "$binary" && cp "$binary" "/out/$binary"; \
     done \
  && for binary in sshd-session sshd-auth; do \
