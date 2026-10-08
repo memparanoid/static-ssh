@@ -2,7 +2,7 @@
 # Fully-static (musl) OpenSSH.
 #
 # Produces statically-linked `sshd`, `sshd-session`, `sshd-auth`, `ssh-keygen`,
-# `ssh` and `ssh-keysign` with zero dynamic dependencies, from pinned
+# `ssh`, `ssh-keysign` and `scp` with zero dynamic dependencies, from pinned
 # openssh-portable source. The binaries run on any Linux of the same
 # architecture regardless of what libc, OpenSSL or loader that host has.
 #
@@ -85,7 +85,7 @@ RUN curl -fsSLO "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${
       --with-privsep-path=/var/empty \
  && make -j"$(nproc)" \
  && mkdir -p /out \
- && for binary in sshd ssh-keygen ssh ssh-keysign; do \
+ && for binary in sshd ssh-keygen ssh ssh-keysign scp; do \
       strip "$binary" && cp "$binary" "/out/$binary"; \
     done \
  && for binary in sshd-session sshd-auth; do \
